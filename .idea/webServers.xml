@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="f7f19e74-b206-4cdf-8e2d-742b9e13c13f" name="VLA_601">
+        <fileTransfer accessType="SFTP" host="10.254.29.16" port="11146" sshConfigId="36281c4f-8c8c-443b-98b2-b4a19a919570" sshConfig="root@10.254.29.16:11146 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
