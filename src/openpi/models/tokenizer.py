@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import numpy as np
 import sentencepiece
@@ -11,7 +12,8 @@ class PaligemmaTokenizer:
     def __init__(self, max_len: int = 48):
         self._max_len = max_len
 
-        path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        # path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
+        path = Path("/home/zhiyu/mzh/openpi/paligemma_tokenizer.model")
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
