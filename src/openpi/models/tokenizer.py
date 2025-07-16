@@ -37,6 +37,22 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
+    def decode(self, tokens: np.ndarray | list[int]) -> str:
+        if isinstance(tokens, np.ndarray):
+            tokens = tokens.tolist()
+        try:
+            eos_id = self.ens_token
+            if eos_id in tokens:
+                tokens = tokens[:tokens.index(eos_id)]
+        except Exception:
+            pass
+
+        return self._tokenizer.decode(tokens)
+
+    @property
+    def ens_token(self):
+        return self._tokenizer.eos_id()
+
 
 class FASTTokenizer:
     def __init__(self, max_len: int = 256, fast_tokenizer_path: str = "physical-intelligence/fast"):
