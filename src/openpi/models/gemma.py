@@ -385,7 +385,13 @@ class Module(nn.Module):
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
 
-        return [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)], kv_cache
+        # ADD
+        logits = [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)]
+        logits[0] = self.compute_logits(logits[0], train=True)
+
+        return logits, kv_cache
+
+        # return [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)], kv_cache
 
     def init(self):
         """Convenience method for initializing all parameters, necessary due to the quirks of linen."""
@@ -396,6 +402,9 @@ class Module(nn.Module):
             jnp.zeros((1, len(self.configs), len(self.configs)), dtype=bool),
         )
 
+    def compute_logits(self, pre_logits, train=False):
+        # pre_logits: [batch, seq, d_model]
+        return self.embedder.decode(pre_logits)
 
 def _apply_rope(x, *, positions, max_wavelength=10_000):
     """Applies RoPE positions [B, L] to x [B, L, H, D]."""
