@@ -11,7 +11,7 @@ from openpi.training import config as _config
 from . import train
 
 
-@pytest.mark.parametrize("config_name", ["debug"])
+@pytest.mark.parametrize("config_name", ["pi0_atomic_bridge"])
 def test_train(tmp_path: pathlib.Path, config_name: str):
     config = dataclasses.replace(
         _config._CONFIGS_DICT[config_name],  # noqa: SLF001

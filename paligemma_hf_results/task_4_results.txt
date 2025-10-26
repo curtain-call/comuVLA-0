@@ -1,0 +1,17 @@
+Task: pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate
+Task ID: 4
+------------------------------------------------------------
+
+AgentView 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'blender'
+--------------------
+
+Wrist 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'coffee maker'
+--------------------

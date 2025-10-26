@@ -180,7 +180,34 @@ class ResizeImages(DataTransformFn):
     width: int
 
     def __call__(self, data: DataDict) -> DataDict:
-        data["image"] = {k: image_tools.resize_with_pad(v, self.height, self.width) for k, v in data["image"].items()}
+        def _to_numpy(x):
+            try:
+                return np.asarray(x)
+            except Exception:
+                # Handle torch.Tensor without importing torch explicitly
+                try:
+                    return x.detach().cpu().numpy()
+                except Exception:
+                    return np.asarray(x)
+
+        def _ensure_hwc_uint8(arr):
+            x = _to_numpy(arr)
+            # Ensure last three dims are (H, W, C)
+            if x.ndim == 2:
+                x = x[..., None]  # H, W -> H, W, 1
+            elif x.ndim >= 3:
+                # If appears to be CHW in the last 3 dims (C,H,W) with C in {1,3}, move C to last
+                if x.shape[-1] not in (1, 3) and x.shape[-3] in (1, 3):
+                    x = np.moveaxis(x, -3, -1)
+                # If last dim is not channel, leave as is to avoid corrupting layout
+            # Convert to uint8
+            if np.issubdtype(x.dtype, np.floating):
+                x = image_tools.convert_to_uint8(x)
+            else:
+                x = x.astype(np.uint8, copy=False)
+            return x
+
+        data["image"] = {k: image_tools.resize_with_pad(_ensure_hwc_uint8(v), self.height, self.width) for k, v in data["image"].items()}
         return data
 
 
@@ -248,8 +275,9 @@ class TokenizePrompt(DataTransformFn):
         if not isinstance(prompt, str):
             prompt = prompt.item()
 
-        tokens, token_masks = self.tokenizer.tokenize(prompt)
-        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
+        tokens, token_masks, question_len = self.tokenizer.tokenize(prompt)
+
+        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks, "question_len": question_len}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -309,6 +337,172 @@ class PromptFromLeRobotTask(DataTransformFn):
 
         return {**data, "prompt": prompt}
 
+
+@dataclasses.dataclass(frozen=True)
+class ExtractAtomicFromSequence(DataTransformFn):
+    """Extracts atomic tokens (from the first frame) and validity mask over the window.
+
+    Expects the following keys (after repack):
+      - "atomic/valid": a boolean sequence of length == action horizon (shape [H] or [H,1])
+      - "atomic/cur_translation_idx": scalar int (taken from the first frame/anchor)
+      - "atomic/cur_rotation_idx": scalar int
+      - "atomic/cur_gripper_idx": scalar int
+      - "atomic/cur_duration_idx": scalar int
+
+    Outputs two new keys:
+      - "atomic_valid": bool[H]
+      - "atomic_tokens": int32[4]
+    """
+
+    action_horizon: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        # validity sequence
+        valid = data.get("atomic/valid")
+        if valid is None:
+            # If not present, create an all-True mask to avoid breaking downstream
+            atomic_valid = np.ones((self.action_horizon,), dtype=bool)
+        else:
+            valid = np.asarray(valid)
+            # squeeze trailing singleton if present: [H,1] -> [H]
+            if valid.ndim == 2 and valid.shape[-1] == 1:
+                valid = valid[..., 0]
+            # pad / trim to action_horizon defensively
+            if valid.shape[0] < self.action_horizon:
+                pad = np.zeros((self.action_horizon - valid.shape[0],), dtype=valid.dtype)
+                atomic_valid = np.concatenate([valid, pad], axis=0)
+            else:
+                atomic_valid = valid[: self.action_horizon]
+
+        # atomic tokens from anchor (first frame)
+        t_idx = int(np.asarray(data.get("atomic/cur_translation_idx", 0)))
+        r_idx = int(np.asarray(data.get("atomic/cur_rotation_idx", 0)))
+        g_idx = int(np.asarray(data.get("atomic/cur_gripper_idx", 0)))
+        d_idx = int(np.asarray(data.get("atomic/cur_duration_idx", 0)))
+        atomic_tokens = np.asarray([t_idx, r_idx, g_idx, d_idx], dtype=np.int32)
+
+        return {
+            **data,
+            "atomic_valid": atomic_valid,
+            "atomic_tokens": atomic_tokens,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class PadStateActions(DataTransformFn):
+    """Pad state/actions to model.action_dim along the last axis.
+
+    - Pads data["state"] to (..., action_dim)
+    - If present, pads data["actions"] to (..., action_horizon, action_dim)
+    """
+
+    action_dim: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        out = dict(data)
+        if "state" in out:
+            out["state"] = pad_to_dim(np.asarray(out["state"]), self.action_dim, axis=-1)
+        if "actions" in out:
+            acts = np.asarray(out["actions"])
+            acts = pad_to_dim(acts, self.action_dim, axis=-1)
+            out["actions"] = acts
+        return out
+
+
+@dataclasses.dataclass(frozen=True)
+class UnpadActions(DataTransformFn):
+    """Slice action vectors back to dataset action dimension and ensure numpy.
+
+    - If actions exist, returns actions[..., :out_dim] as a numpy array.
+    """
+
+    out_dim: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        acts = np.asarray(data["actions"])
+        if acts.ndim >= 1 and acts.shape[-1] >= self.out_dim:
+            acts = acts[..., : self.out_dim]
+        return {**data, "actions": acts}
+
+
+@dataclasses.dataclass(frozen=True)
+class RemapImagesForPi0(DataTransformFn):
+    """Remap generic image/image_{i} keys to model-expected image keys and build masks.
+
+    - Input expects after repack:
+      - image/image_0, image/image_1, image/image_2 (and optionally image/image_3)
+      - camera_present: bool[num_cams]
+    - Output provides:
+      - image: dict with keys base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb
+      - image_mask: dict with the same keys, from camera_present if available (else True)
+    """
+
+    use_camera_present: bool = True
+
+    def __call__(self, data: DataDict) -> DataDict:
+        imgs = data.get("image")
+        if not isinstance(imgs, dict):
+            return data
+
+        # get generic images if present
+        im0 = imgs.get("image_0")
+        im1 = imgs.get("image_1")
+        im2 = imgs.get("image_2")
+
+        def zeros_like_image(ref):
+            try:
+                shape = np.asarray(ref).shape
+                dtype = getattr(ref, "dtype", np.uint8)
+                if len(shape) == 3:
+                    return np.zeros(shape, dtype=dtype)
+            except Exception:
+                pass
+            return np.zeros((224, 224, 3), dtype=np.uint8)
+
+        # ensure required three views exist
+        if im0 is None:
+            im0 = im1 if im1 is not None else im2
+        if im0 is None:
+            im0 = zeros_like_image(im0)
+        if im1 is None:
+            im1 = zeros_like_image(im0)
+        if im2 is None:
+            im2 = zeros_like_image(im0)
+
+        new_images = {
+            "base_0_rgb": im0,
+            "left_wrist_0_rgb": im1,
+            "right_wrist_0_rgb": im2,
+        }
+
+        # build image masks from camera_present if requested
+        if self.use_camera_present:
+            if "camera_present" not in data:
+                print("RemapImagesForPi0: missing required key 'camera_present' in sample")
+                raise ValueError("camera_present is required to build image masks")
+            try:
+                cp = np.asarray(data["camera_present"]).astype(bool)
+                # Require at least 3 entries for the three expected views
+                if cp.size < 3:
+                    print(f"RemapImagesForPi0: camera_present has insufficient length {cp.size}, expected >= 3")
+                    raise ValueError("camera_present length must be at least 3")
+                def cp_i(i: int) -> bool:
+                    return bool(cp[i])
+                image_mask = {
+                    "base_0_rgb": cp_i(0),
+                    "left_wrist_0_rgb": cp_i(1),
+                    "right_wrist_0_rgb": cp_i(2),
+                }
+            except Exception as e:
+                print(f"RemapImagesForPi0: failed to parse camera_present -> image_mask: {e}")
+                raise
+        else:
+            image_mask = {k: True for k in new_images}
+
+        out = {**data, "image": new_images, "image_mask": image_mask}
+        return out
 
 def flatten_dict(tree: at.PyTree) -> dict:
     """Flatten a nested dictionary. Uses '/' as the separator."""

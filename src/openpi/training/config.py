@@ -27,6 +27,8 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
+from src.openpi.shared import nnx_utils
+
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
@@ -330,7 +332,78 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            action_sequence_keys=("action",),
+            # Include atomic.valid so it is windowed with the same delta_timestamps
+            # action_sequence_keys=("action", "atomic.valid"),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotAtomicDataConfig(DataConfigFactory):
+    """DataConfig for atomic pretraining on LeRobot datasets.
+
+    - Minimal repack from official LeRobot keys
+    - Adds atomic annotations and windows them alongside actions
+    - No Libero-specific transforms
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # map flat multi-camera to generic image/image_{i}
+                        "image": {
+                            "image_0": "observation.images.image_0",
+                            "image_1": "observation.images.image_1",
+                            "image_2": "observation.images.image_2",
+                        },
+                        # camera presence for masks
+                        "camera_present": "camera_present",
+                        # state/action
+                        "state": "observation.state",
+                        "actions": "action",
+                        # optional prompt
+                        "prompt": "prompt",
+                        # atomic annotations
+                        "atomic/valid": "atomic.valid",
+                        "atomic/cur_translation_idx": "atomic.cur_translation_idx",
+                        "atomic/cur_rotation_idx": "atomic.cur_rotation_idx",
+                        "atomic/cur_gripper_idx": "atomic.cur_gripper_idx",
+                        "atomic/cur_duration_idx": "atomic.cur_duration_idx",
+                        # optional: segment_start to enable AtomicWindowDataset filtering
+                        "atomic.segment_start": "atomic.segment_start",
+                    }
+                )
+            ]
+        )
+
+        # Base transforms: no Libero adaptor; only optional delta actions and atomic extraction
+        data_transforms = _transforms.Group(inputs=[], outputs=[])
+
+        # Optional: convert actions to deltas if your dataset stores absolute
+        # Uncomment and adjust mask if needed
+        # delta_action_mask = _transforms.make_bool_mask(6, -1)
+        # data_transforms = data_transforms.push(
+        #     inputs=[_transforms.DeltaActions(delta_action_mask)],
+        #     outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        # )
+
+        # Remap images to model keys and build image masks from camera_present
+        data_transforms = data_transforms.push(inputs=[_transforms.RemapImagesForPi0(use_camera_present=True)], outputs=[])
+        # Pad state/actions to model.action_dim (e.g., 32) to match pretrained proj shapes
+        # data_transforms = data_transforms.push(inputs=[_transforms.PadStateActions(model_config.action_dim)], outputs=[])
+        # Attach atomic tokens and valid mask
+        # data_transforms = data_transforms.push(inputs=[_transforms.ExtractAtomicFromSequence(model_config.action_horizon)], outputs=[_transforms.UnpadActions(out_dim=7)])
+        data_transforms = data_transforms.push(inputs=[_transforms.ExtractAtomicFromSequence(model_config.action_horizon)], outputs=[])
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action", "atomic.valid"),
         )
 
 
@@ -387,6 +460,11 @@ class RLDSDroidDataConfig(DataConfigFactory):
             action_space=self.action_space,
         )
 
+@dataclasses.dataclass(frozen=True)
+class G1DataConfig(DataConfigFactory):
+    pass
+
+
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -423,10 +501,10 @@ class TrainConfig:
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
-    batch_size: int = 32
+    batch_size: int = 128
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
-    num_workers: int = 2
+    num_workers: int = 16
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
@@ -633,6 +711,81 @@ _CONFIGS = [
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
+    ),
+    # Atomic pretraining on LeRobot (Bridge v2 converted) with placeholder KV and fused conditioning
+    TrainConfig(
+        name="pi0_atomic_bridge",
+        model=pi0.Pi0Config(
+            action_dim=7,
+            action_horizon=10,
+            cond_mode="state",
+            kv_policy="placeholder",
+            loss_weights={"action": 1.0, "atomic": 2.0, "ntp": 0.0},
+            atomic_vocab_sizes=(193, 19, 3, 3),
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m",
+        ),
+        data=LeRobotAtomicDataConfig(
+            repo_id="maozihao/bridge2atomic",
+            # root="/home/zhiyu/mzh/datasets/bridge2lerobot",
+            root="/home/zhiyu/mzh/datasets/bridge2lerobot_train",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        # Initialize from base pi0 checkpoint; override via CLI as needed
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/zhiyu/mzh/pi0_base/params"),
+        # Freeze filter for LoRA finetuning, matches model LoRA variants
+        freeze_filter=nnx.All(
+            pi0.Pi0Config(
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m",
+                action_dim=7,
+                action_horizon=10,
+                max_token_len=64,
+            ).get_freeze_filter(),
+            # 额外冻结 SigLIP 图像编码器分支
+            nnx_utils.PathRegex(".*img.*"),
+        ),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        num_train_steps=1000000,
+    ),
+    # Stage-2: focus on action head. Freeze VLM & SigLIP, upweight action loss, raise LR floor.
+    TrainConfig(
+        name="pi0_atomic_bridge_stage2",
+        model=pi0.Pi0Config(
+            action_dim=7,
+            action_horizon=10,
+            cond_mode="state",
+            kv_policy="placeholder",
+            loss_weights={"action": 3.0, "atomic": 0.25, "ntp": 0.0},
+            atomic_vocab_sizes=(193, 19, 3, 3),
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m",
+        ),
+        data=LeRobotAtomicDataConfig(
+            repo_id="maozihao/bridge2atomic",
+            root="/home/zhiyu/mzh/datasets/bridge2lerobot",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/zhiyu/mzh/openpi/checkpoints/pi0_atomic_bridge/<exp>/<step>/params"),
+        freeze_filter=nnx.All(
+            # 冻结 LLM（含LoRA权重）
+            nnx_utils.PathRegex("PaliGemma/llm/.*"),
+            # 冻结 SigLIP 图像编码器
+            nnx_utils.PathRegex(".*img.*"),
+        ),
+        ema_decay=None,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1.5e-4,
+            decay_steps=200_000,
+            decay_lr=1.5e-5,
+        ),
+        num_train_steps=300_000,
     ),
     #
     # Fine-tuning Aloha configs.

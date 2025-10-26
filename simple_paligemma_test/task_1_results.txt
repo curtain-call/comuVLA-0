@@ -1,0 +1,19 @@
+Task: pick up the black bowl next to the ramekin and place it on the plate
+Task ID: 1
+------------------------------------------------------------
+Prompt: 'caption en:'
+Status: SUCCESS
+Result: '[ERROR: No module named 'jax.experimental.array_serialization']'
+----------------------------------------
+Prompt: 'Caption'
+Status: SUCCESS
+Result: '[ERROR: No module named 'jax.experimental.array_serialization']'
+----------------------------------------
+Prompt: 'describe this image:'
+Status: SUCCESS
+Result: '[ERROR: No module named 'jax.experimental.array_serialization']'
+----------------------------------------
+Prompt: ''
+Status: SUCCESS
+Result: '[ERROR: No module named 'jax.experimental.array_serialization']'
+----------------------------------------

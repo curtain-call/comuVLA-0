@@ -106,6 +106,12 @@ def get_config(variant: Variant) -> Config:
             head_dim=256,
             lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
         )
+    if variant == "gemma_600m":
+        return Config(width=1408, depth=18, mlp_dim=5632, num_heads=8, num_kv_heads=1, head_dim=256)
+    if variant == "gemma_1b":
+        return Config(width=1664, depth=18, mlp_dim=6656, num_heads=8, num_kv_heads=1, head_dim=256)
+    if variant == "gemma_1_5b":
+        return Config(width=1920, depth=18, mlp_dim=7680, num_heads=8, num_kv_heads=1, head_dim=256)
     raise ValueError(f"Unknown variant: {variant}")
 
 
@@ -118,7 +124,7 @@ class RMSNorm(nn.Module):
         var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)  # compute variance in float32
         normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))  # compute normalization in float32
         normed_inputs = normed_inputs * (
-            1 + scale
+                1 + scale
         )  # scale by learned parameter in float32 (matches Flax implementation)
         return normed_inputs.astype(dtype)  # return in original dtype
 
@@ -369,14 +375,14 @@ class Module(nn.Module):
 
     @at.typecheck
     def __call__(
-        self,
-        # list of token arrays, one for each expert, or None if that expert should not be run
-        embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
-        positions: at.Int[at.Array, "b t"],
-        mask: at.Bool[at.Array, "b t s"],
-        *,
-        kv_cache: KVCache | None = None,
-        deterministic: bool = True,
+            self,
+            # list of token arrays, one for each expert, or None if that expert should not be run
+            embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
+            positions: at.Int[at.Array, "b t"],
+            mask: at.Bool[at.Array, "b t s"],
+            *,
+            kv_cache: KVCache | None = None,
+            deterministic: bool = True,
     ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype), embedded)
         mask = jnp.asarray(mask)[:, None, :, :]
@@ -386,12 +392,13 @@ class Module(nn.Module):
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in embedded if e is not None)
 
         # ADD
-        logits = [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)]
-        logits[0] = self.compute_logits(logits[0], train=True)
+        # logits = [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)]
+        # if logits[0] is not None:
+        #     logits[0] = self.compute_logits(logits[0], train=True)
 
-        return logits, kv_cache
+        # return logits, kv_cache
 
-        # return [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)], kv_cache
+        return [f(e) if e is not None else e for f, e in zip(self.final_norms, embedded, strict=True)], kv_cache
 
     def init(self):
         """Convenience method for initializing all parameters, necessary due to the quirks of linen."""
@@ -406,10 +413,11 @@ class Module(nn.Module):
         # pre_logits: [batch, seq, d_model]
         return self.embedder.decode(pre_logits)
 
+
 def _apply_rope(x, *, positions, max_wavelength=10_000):
     """Applies RoPE positions [B, L] to x [B, L, H, D]."""
     freq_exponents = (2.0 / x.shape[-1]) * jnp.arange(x.shape[-1] // 2, dtype=jnp.float32)
-    timescale = max_wavelength**freq_exponents
+    timescale = max_wavelength ** freq_exponents
     radians = positions[..., None] / timescale[None, None, :]
     radians = radians[..., None, :]
     assert radians.dtype == jnp.float32

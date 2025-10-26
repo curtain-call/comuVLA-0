@@ -1,0 +1,31 @@
+HuggingFace PaliGemma 推理结果总结
+==================================================
+模型: /home/zhiyu/mzh/openpi/checkpoints/paligemma_hf
+设备: GPU
+测试任务数: 5
+每任务测试 prompt 数: 1
+总测试数: 10 (AgentView + Wrist)
+
+生成配置:
+  - max_new_tokens: 50
+  - do_sample: False
+  - temperature: 1.0
+  - top_k: 50
+  - top_p: 0.9
+
+成功率统计:
+AgentView 图像: 5/5 (100.0%)
+Wrist 图像: 5/5 (100.0%)
+总体: 10/10 (100.0%)
+
+详细任务结果:
+任务 0: AgentView 1/1, Wrist 1/1
+  描述: pick up the black bowl between the plate and the ramekin and place it on the plate
+任务 1: AgentView 1/1, Wrist 1/1
+  描述: pick up the black bowl next to the ramekin and place it on the plate
+任务 2: AgentView 1/1, Wrist 1/1
+  描述: pick up the black bowl from table center and place it on the plate
+任务 3: AgentView 1/1, Wrist 1/1
+  描述: pick up the black bowl on the cookie box and place it on the plate
+任务 4: AgentView 1/1, Wrist 1/1
+  描述: pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate

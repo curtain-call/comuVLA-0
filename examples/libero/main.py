@@ -23,7 +23,7 @@ class Args:
     #################################################################################################################
     # Model server parameters
     #################################################################################################################
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
     resize_size: int = 224
     replan_steps: int = 5
@@ -190,6 +190,7 @@ def _get_libero_env(task, resolution, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+    print(task_bddl_file)
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state

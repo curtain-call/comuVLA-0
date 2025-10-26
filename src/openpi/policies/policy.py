@@ -16,6 +16,7 @@ from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+import openpi.models.tokenizer as _tokenizer
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
@@ -32,11 +33,14 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+        # 添加
+        self._sample_text = getattr(model, "sample_text", None)
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._rng = rng or jax.random.key(0)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
+        self.tokenizer = _tokenizer.PaligemmaTokenizer(max_len=100)
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -48,15 +52,22 @@ class Policy(BasePolicy):
 
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
+        text = None
+        # 同时输出对当前环境的描述和预测结果
+        # text = self._sample_text(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs, max_gen_len=100, tokenizer=self.tokenizer)
+        # TODO 在这里使用tokenizer而不是在模型中使用， 修改
+
+        out = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            "actions": out,
         }
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
         model_time = time.monotonic() - start_time
 
         outputs = self._output_transform(outputs)
+        outputs["decoded_text"] = text,
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

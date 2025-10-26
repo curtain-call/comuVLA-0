@@ -1,0 +1,14 @@
+Libero 观测数据摘要
+==================================================
+任务套件: libero_spatial
+收集任务数: 5
+图像尺寸: 224x224
+环境分辨率: 256
+随机种子: 7
+
+任务列表:
+ 0. pick up the black bowl between the plate and the ramekin and place it on the plate
+ 1. pick up the black bowl next to the ramekin and place it on the plate
+ 2. pick up the black bowl from table center and place it on the plate
+ 3. pick up the black bowl on the cookie box and place it on the plate
+ 4. pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate

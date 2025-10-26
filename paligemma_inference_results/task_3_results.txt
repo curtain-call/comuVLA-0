@@ -1,0 +1,49 @@
+Task: pick up the black bowl on the cookie box and place it on the plate
+Task ID: 3
+------------------------------------------------------------
+
+AgentView 图像结果:
+------------------------------
+Prompt: 'caption en:'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'Caption'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'describe this image:'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'what do you see?'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: ''
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+
+Wrist 图像结果:
+------------------------------
+Prompt: 'caption en:'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'Caption'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'describe this image:'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: 'what do you see?'
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------
+Prompt: ''
+Status: SUCCESS
+Result: '[ERROR: module 'jax.experimental.layout' has no attribute 'DeviceLocalLayout']'
+--------------------

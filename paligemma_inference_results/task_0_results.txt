@@ -1,0 +1,49 @@
+Task: pick up the black bowl between the plate and the ramekin and place it on the plate
+Task ID: 0
+------------------------------------------------------------
+
+AgentView 图像结果:
+------------------------------
+Prompt: 'caption en:'
+Status: SUCCESS
+Result: ' a a a a a a a a a a a'
+--------------------
+Prompt: 'Caption'
+Status: SUCCESS
+Result: ' . . . . . . . . . . .'
+--------------------
+Prompt: 'describe this image:'
+Status: SUCCESS
+Result: '[NO GENERATION]'
+--------------------
+Prompt: 'what do you see?'
+Status: SUCCESS
+Result: ' a a a a a a a a a a a'
+--------------------
+Prompt: ''
+Status: SUCCESS
+Result: 'aaaaaaaaaaa'
+--------------------
+
+Wrist 图像结果:
+------------------------------
+Prompt: 'caption en:'
+Status: SUCCESS
+Result: ' view view view view view view view view view view view'
+--------------------
+Prompt: 'Caption'
+Status: SUCCESS
+Result: ' . . . . . . . . . . .'
+--------------------
+Prompt: 'describe this image:'
+Status: SUCCESS
+Result: ' A A A A A A A A A A A'
+--------------------
+Prompt: 'what do you see?'
+Status: SUCCESS
+Result: ' i i i i i i i i i i i'
+--------------------
+Prompt: ''
+Status: SUCCESS
+Result: 'aaaaaaaaaaa'
+--------------------
