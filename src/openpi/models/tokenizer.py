@@ -1,15 +1,17 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import sentencepiece
+from numpy import ndarray, dtype
 from transformers import AutoProcessor
 
 import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48):
+    def __init__(self, max_len: int = 64):
         self._max_len = max_len
 
         # path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
@@ -17,15 +19,19 @@ class PaligemmaTokenizer:
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
-    def tokenize(self, prompt: str) -> tuple[np.ndarray, np.ndarray]:
-        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+    def tokenize(self, prompt: str) -> tuple[...]:
+        cleaned_text = prompt.strip().replace("_", " ")
+        if not cleaned_text.endswith("\n"):
+            cleaned_text = cleaned_text + "\n"  # 显式 start-of-answer
+        suffix_tokens = self._tokenizer.encode(cleaned_text, add_bos=True, add_eos=True)
         # tokenize "\n" separately as the "start of answer" token
-        tokens = self._tokenizer.encode(cleaned_text, add_bos=True) + self._tokenizer.encode("\n")
+        # tokens = prefix_tokens + suffix_tokens
+        tokens = suffix_tokens
         tokens_len = len(tokens)
         if tokens_len < self._max_len:
             padding = [False] * (self._max_len - tokens_len)
             mask = [True] * tokens_len + padding
-            tokens = tokens + padding
+            tokens = tokens + [self.pad_token] * (self._max_len - tokens_len)
         else:
             if len(tokens) > self._max_len:
                 logging.warning(
@@ -35,7 +41,7 @@ class PaligemmaTokenizer:
             tokens = tokens[: self._max_len]
             mask = [True] * self._max_len
 
-        return np.asarray(tokens), np.asarray(mask)
+        return np.asarray(tokens), np.asarray(mask), 0
 
     # ========================================== Decode ============================================================
     def decode(self, tokens: np.ndarray | list[int]) -> str:

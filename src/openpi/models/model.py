@@ -44,7 +44,7 @@ IMAGE_RESOLUTION = (224, 224)
 
 # Data format
 #
-# Data transforms produce the model input as a nested dictionary which is later converted
+# Data transforms produce the model input as a nested dictionary which is later convertedXXX
 # into `Obesrvation` and `Actions` objects. See below.
 #
 # In the dictory form, this data should look like:
@@ -94,12 +94,19 @@ class Observation(Generic[ArrayT]):
     # Tokenized prompt mask.
     tokenized_prompt_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    question_len: at.Int[ArrayT, "*b"] | None = None
     # pi0-fast model specific fields.
 
     # Token auto-regressive mask (for FAST autoregressive model).
     token_ar_mask: at.Int[ArrayT, "*b l"] | None = None
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Atomic action supervision (optional)
+    # Four discrete tokens for the anchor frame: translation / rotation / gripper / duration
+    atomic_tokens: at.Int[ArrayT, "*b 4"] | None = None
+    # Validity mask over the action horizon for masking padded steps during loss
+    atomic_valid: at.Bool[ArrayT, "*b ah"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -119,6 +126,9 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            question_len=data.get("question_len"),
+            atomic_tokens=data.get("atomic_tokens"),
+            atomic_valid=data.get("atomic_valid"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -198,6 +208,9 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        question_len=observation.question_len,
+        atomic_tokens=observation.atomic_tokens,
+        atomic_valid=observation.atomic_valid,
     )
 
 

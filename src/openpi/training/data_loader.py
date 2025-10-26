@@ -61,6 +61,87 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
 
 
+class AtomicWindowDataset(Dataset[T_co]):
+    """Wrap a dataset and only expose samples whose window starts at an atomic segment start.
+
+    Assumes the underlying dataset returns a dict that includes a boolean sequence key
+    "atomic.segment_start" of length equal to the action horizon, where the first element
+    is True if the current window aligns with the start of an atomic segment.
+    """
+
+    def __init__(self, dataset: Dataset):
+        self._dataset = dataset
+        self._indices: list[int] = []
+        
+        # 尝试直接访问底层 HuggingFace Dataset 以避免深拷贝
+        hf_dataset = None
+        if hasattr(dataset, 'hf_dataset'):
+            hf_dataset = dataset.hf_dataset
+        elif hasattr(dataset, '_dataset'):
+            # 处理 TransformedDataset 等包装类
+            inner = dataset._dataset
+            while inner is not None:
+                if hasattr(inner, 'hf_dataset'):
+                    hf_dataset = inner.hf_dataset
+                    break
+                inner = getattr(inner, '_dataset', None)
+        
+        # 如果找到了 HuggingFace Dataset，直接访问列避免深拷贝
+        if hf_dataset is not None and "atomic.segment_start" in hf_dataset.column_names:
+            try:
+                seg_start_col = hf_dataset["atomic.segment_start"]
+                for i in range(len(seg_start_col)):
+                    try:
+                        seg_start = seg_start_col[i]
+                        if seg_start is None:
+                            self._indices.append(i)
+                            continue
+                        # Expect shape [H, 1] or [H]; check the first element
+                        first = seg_start
+                        # Handle shape (1,) by extracting scalar
+                        if hasattr(first, "shape") and getattr(first, "shape", ()) == (1,):
+                            first = first[0]
+                        if bool(first):
+                            self._indices.append(i)
+                    except Exception:
+                        # Be conservative: if anything goes wrong, keep the sample
+                        self._indices.append(i)
+                print(f"[AtomicWindowDataset] 快速路径：从 {len(dataset)} 个样本中筛选出 {len(self._indices)} 个 atomic segment starts")
+                return
+            except Exception as e:
+                print(f"[AtomicWindowDataset] 快速路径失败 ({e})，回退到标准路径")
+        
+        # 回退：标准路径（会触发深拷贝，但更通用）
+        print(f"[AtomicWindowDataset] 使用标准路径遍历 {len(dataset)} 个样本（可能较慢）...")
+        for i in range(len(dataset)):
+            if i % 1000 == 0 and i > 0:
+                print(f"  已处理 {i}/{len(dataset)} 个样本...")
+            try:
+                sample = dataset[i]
+                seg_start = sample.get("atomic.segment_start")
+                if seg_start is None:
+                    # If the field is missing, keep all windows.
+                    self._indices.append(i)
+                    continue
+                # Expect shape [H, 1] or [H]; check the first element
+                first = seg_start[0] if hasattr(seg_start, '__getitem__') else seg_start
+                # Handle shape (1,) by extracting scalar
+                if hasattr(first, "shape") and getattr(first, "shape", ()) == (1,):
+                    first = first[0]
+                if bool(first):
+                    self._indices.append(i)
+            except Exception:
+                # Be conservative: if anything goes wrong, keep the sample
+                self._indices.append(i)
+        print(f"[AtomicWindowDataset] 标准路径：从 {len(dataset)} 个样本中筛选出 {len(self._indices)} 个 atomic segment starts")
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        return self._dataset[self._indices[index.__index__()]]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -299,6 +380,16 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    # If atomic segment metadata is present, restrict to windows that start at a segment.
+    try:
+        # Peek to decide if wrapping helps; avoid materializing the whole dataset twice.
+        if len(dataset) > 0:
+            first_sample = dataset[0]
+            if "atomic.segment_start" in first_sample:
+                dataset = AtomicWindowDataset(dataset)
+    except Exception:
+        # If peeking fails, fall back to unwrapped dataset.
+        pass
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     data_loader = TorchDataLoader(
@@ -397,6 +488,10 @@ class TorchDataLoader:
 
         mp_context = None
         if num_workers > 0:
+            # 确保 worker 进程使用 CPU 后端初始化 JAX，避免在多进程中初始化 GPU 导致死锁/卡死
+            os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+            os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+            os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
             mp_context = multiprocessing.get_context("spawn")
 
         generator = torch.Generator()

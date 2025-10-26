@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import pathlib
 import re
 from typing import Protocol, runtime_checkable
 
@@ -63,9 +64,10 @@ class PaliGemmaWeightLoader(WeightLoader):
     """
 
     def load(self, params: at.Params) -> at.Params:
-        path = download.maybe_download(
-            "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
-        )
+        # path = download.maybe_download(
+        #     "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
+        # )
+        path = pathlib.Path("/home/zhiyu/mzh/checkpoints/paligemma-3b-pt-224.npz")
         with path.open("rb") as f:
             flat_params = dict(np.load(f, allow_pickle=False))
         loaded_params = {"PaliGemma": flax.traverse_util.unflatten_dict(flat_params, sep="/")["params"]}
@@ -100,3 +102,61 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
             result[k] = flat_ref[k]
 
     return flax.traverse_util.unflatten_dict(result, sep="/")
+
+    
+    
+def _flatten_param_keys(params: at.Params) -> set[str]:
+    """Flattens a nested params dict to a set of string keys joined by '/'."""
+    flat = flax.traverse_util.flatten_dict(params, sep="/")
+    return set(flat.keys())
+    
+    
+def compare_weight_loader_keys(
+    params: at.Params, loader_a: WeightLoader, loader_b: WeightLoader
+) -> dict[str, set[str]]:
+    """Compares the flattened param key sets produced by two loaders.
+    
+    Args:
+        params: Reference parameter structure to guide merging.
+        loader_a: First WeightLoader.
+        loader_b: Second WeightLoader.
+    
+    Returns:
+        A dict with key sets:
+          - 'only_in_a': Keys present only in A-loaded params.
+          - 'only_in_b': Keys present only in B-loaded params.
+          - 'in_both': Keys present in both.
+    """
+    loaded_a = loader_a.load(params)
+    loaded_b = loader_b.load(params)
+    
+    keys_a = _flatten_param_keys(loaded_a)
+    keys_b = _flatten_param_keys(loaded_b)
+    
+    return {
+        "only_in_a": keys_a - keys_b,
+        "only_in_b": keys_b - keys_a,
+        "in_both": keys_a & keys_b,
+    }
+    
+    
+def compare_checkpoint_and_paligemma_keys(
+    params: at.Params, checkpoint_path: str
+) -> dict[str, set[str]]:
+    """Convenience wrapper to compare Checkpoint vs PaliGemma loader key sets.
+    
+    Args:
+        params: Reference parameter structure (from your model init).
+        checkpoint_path: Path or URI to the checkpoint params.
+    
+    Returns:
+        Same structure as compare_weight_loader_keys.
+    """
+    a = CheckpointWeightLoader(params_path=checkpoint_path)
+    b = PaliGemmaWeightLoader()
+    result = compare_weight_loader_keys(params, a, b)
+    
+    logger.info("Key comparison (Checkpoint vs PaliGemma): "
+                "only_in_checkpoint=%d, only_in_paligemma=%d, in_both=%d",
+                len(result["only_in_a"]), len(result["only_in_b"]), len(result["in_both"]))
+    return result

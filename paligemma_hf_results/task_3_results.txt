@@ -1,0 +1,17 @@
+Task: pick up the black bowl on the cookie box and place it on the plate
+Task ID: 3
+------------------------------------------------------------
+
+AgentView 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'blender'
+--------------------
+
+Wrist 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'some stuff'
+--------------------

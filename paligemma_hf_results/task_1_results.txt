@@ -1,0 +1,17 @@
+Task: pick up the black bowl next to the ramekin and place it on the plate
+Task ID: 1
+------------------------------------------------------------
+
+AgentView 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'blender'
+--------------------
+
+Wrist 图像结果:
+------------------------------
+Prompt: 'What is on the table? Answer: '
+Status: SUCCESS
+Result: 'candies'
+--------------------
