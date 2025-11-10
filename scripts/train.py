@@ -162,12 +162,65 @@ def init_train_state(
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
-        # Convert frozen params to bfloat16.
-        # params = nnx_utils.state_map(params, config.freeze_filter, lambda p: p.replace(p.value.astype(jnp.bfloat16)))
-        # action_params = params.filter(is_action_expert_param)
-        # opt_state = tx.init(action_params)
+        
+        # If trainable_filter is not specified, use the inverse of freeze_filter
+        trainable_filter = nnx.Not(config.freeze_filter)
+        
+        # Verify freeze/trainable filters
+        if jax.process_index() == 0:
+             # Debug: Check a sample of actual paths
+            sample_paths = []
+            for path, _ in list(traverse_util.flatten_dict(params.to_pure_dict()).items())[:20]:
+                path_str = '/'.join(str(p) for p in path)
+                sample_paths.append(path_str)
+            
+            logging.info("Sample parameter paths:")
+            for p in sample_paths[:10]:
+                logging.info(f"  {p}")
+            frozen_params = params.filter(config.freeze_filter)
+            trainable_params = params.filter(trainable_filter)
+            
+            frozen_paths = set()
+            trainable_paths = set()
+            
+            for path, _ in traverse_util.flatten_dict(frozen_params.to_pure_dict()).items():
+                path_str = '/'.join(str(p) for p in path)
+                frozen_paths.add(path_str)
+            
+            for path, _ in traverse_util.flatten_dict(trainable_params.to_pure_dict()).items():
+                path_str = '/'.join(str(p) for p in path)
+                trainable_paths.add(path_str)
+            
+            # Count parameters
+            frozen_count = sum(p.size for p in jax.tree_leaves(frozen_params.to_pure_dict()) if hasattr(p, 'size'))
+            trainable_count = sum(p.size for p in jax.tree_leaves(trainable_params.to_pure_dict()) if hasattr(p, 'size'))
+            total_count = frozen_count + trainable_count
+            
+            logging.info("=" * 80)
+            logging.info(f"PARAMETER FREEZE STATUS")
+            logging.info("=" * 80)
+            logging.info(f"Total Parameters: {total_count:,}")
+            logging.info(f"Frozen:    {frozen_count:,} ({frozen_count/total_count*100:.1f}%)")
+            logging.info(f"Trainable: {trainable_count:,} ({trainable_count/total_count*100:.1f}%)")
+            logging.info("=" * 80)
+            
+            # Sample frozen paths (first 10)
+            logging.info("Sample FROZEN paths:")
+            for path in sorted(frozen_paths)[:10]:
+                logging.info(f"  [FROZEN] {path}")
+            if len(frozen_paths) > 10:
+                logging.info(f"  ... and {len(frozen_paths) - 10} more")
+            
+            # Sample trainable paths (first 10)
+            logging.info("Sample TRAINABLE paths:")
+            for path in sorted(trainable_paths)[:10]:
+                logging.info(f"  [TRAIN] {path}")
+            if len(trainable_paths) > 10:
+                logging.info(f"  ... and {len(trainable_paths) - 10} more")
+            logging.info("=" * 80)
+        
         # Initialize optimizer on the trainable subset to keep tree structures consistent with grads/updates.
-        opt_state = tx.init(params.filter(config.trainable_filter))
+        opt_state = tx.init(params.filter(trainable_filter))
 
         return training_utils.TrainState(
             step=0,
@@ -194,7 +247,8 @@ def init_train_state(
     params_shape_pure = train_state_shape.params.to_pure_dict()
 
     # 仅加载 VLM（PaliGemma）权重；其余模块保持随机初始化
-    vlm_loader = _weight_loaders.PaliGemmaWeightLoader()
+    # vlm_loader = _weight_loaders.PaliGemmaWeightLoader()
+    vlm_loader = config.weight_loader
     merged_partial_params = vlm_loader.load(params_shape_pure)
     # 过滤掉占位的 ShapeDtypeStruct，只保留实际数组权重，避免传入 jitted init 报类型错误
     merged_partial_params = traverse_util.unflatten_dict(
@@ -359,15 +413,17 @@ def train_step(
     #     return jax.tree_map(lambda a,n: a + n if n is not None else a, action_g, ntp_g_full)
     # 0.01统一量纲
 
-    # Filter out frozen params via config.freeze_filter (trainable = Param AND NOT freeze_filter)
-    diff_state = nnx.DiffState(0, config.trainable_filter)
+    # Filter out frozen params (trainable = Param AND NOT freeze_filter)
+    trainable_filter = nnx.Not(config.freeze_filter)
+    
+    diff_state = nnx.DiffState(0, trainable_filter)
     total_loss, grads = nnx.value_and_grad(total_loss_fn, argnums=diff_state)(
         model, train_rng, observation, actions
     )
 
-    # Select trainable subset according to config.freeze_filter
-    params_sub = state.params.filter(config.trainable_filter)
-    grads_sub = grads.filter(config.trainable_filter)
+    # Select trainable subset
+    params_sub = state.params.filter(trainable_filter)
+    grads_sub = grads.filter(trainable_filter)
     updates, new_opt_state = state.tx.update(grads_sub, state.opt_state, params_sub)
     new_params_sub = optax.apply_updates(params_sub, updates)
 

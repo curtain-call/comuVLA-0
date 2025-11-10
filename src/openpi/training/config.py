@@ -20,6 +20,8 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.calvin_policy as calvin_policy
+import openpi.policies.bridge_policy as bridge_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -27,7 +29,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
-from src.openpi.shared import nnx_utils
+from openpi.shared import nnx_utils
 
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
@@ -117,6 +119,16 @@ class ModelTransformFactory(GroupFactory):
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
+                        # Image aug + scale + normalize (CLIP/SigLIP style)
+                        # _transforms.RandomShiftsAug(
+                        #     pad_default=0,
+                        #     pad_by_key={"base_0_rgb": 10, "left_wrist_0_rgb": 4, "right_wrist_0_rgb": 4},
+                        # ),
+                        _transforms.ScaleImagesToUnit(),
+                        _transforms.NormalizeImages(
+                            mean=(0.48145466, 0.4578275, 0.40821073),
+                            std=(0.26862954, 0.26130258, 0.27577711),
+                        ),
                         _transforms.TokenizePrompt(
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         ),
@@ -356,7 +368,7 @@ class LeRobotAtomicDataConfig(DataConfigFactory):
                         "image": {
                             "image_0": "observation.images.image_0",
                             "image_1": "observation.images.image_1",
-                            "image_2": "observation.images.image_2",
+                            # "image_2": "observation.images.image_2",
                         },
                         # camera presence for masks
                         "camera_present": "camera_present",
@@ -390,7 +402,9 @@ class LeRobotAtomicDataConfig(DataConfigFactory):
         # )
 
         # Remap images to model keys and build image masks from camera_present
-        data_transforms = data_transforms.push(inputs=[_transforms.RemapImagesForPi0(use_camera_present=True)], outputs=[])
+        data_transforms = data_transforms.push(inputs=[_transforms.RemapImagesForPi0(use_camera_present=False)], outputs=[])
+        # Derive atomic duration index from atomic.valid (min=3, max=10), compact to 0..7 classes
+        data_transforms = data_transforms.push(inputs=[_transforms.ComputeAtomicDuration(min_len=3, max_len=10, compact=True)], outputs=[])
         # Pad state/actions to model.action_dim (e.g., 32) to match pretrained proj shapes
         # data_transforms = data_transforms.push(inputs=[_transforms.PadStateActions(model_config.action_dim)], outputs=[])
         # Attach atomic tokens and valid mask
@@ -403,6 +417,118 @@ class LeRobotAtomicDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            action_sequence_keys=("action", "atomic.valid"),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotBridgeDataConfig(DataConfigFactory):
+    """DataConfig for baseline training on LeRobot datasets (no atomic annotations).
+
+    - Minimal repack from official LeRobot keys
+    - No atomic fields
+    - Uses BridgeInputs/Outputs to adapt images/state/actions to model expectations
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # map flat multi-camera to generic image/image_{i}
+                        "image": {
+                            "image_0": "observation.images.image_0",
+                            "image_1": "observation.images.image_1",
+                            "image_2": "observation.images.image_2",
+                        },
+                        # camera presence for masks
+                        "camera_present": "camera_present",
+                        # state/action
+                        "state": "observation.state",
+                        "actions": "action",
+                        # prompt from per-frame task string
+                        "prompt": "task",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[bridge_policy.BridgeInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[bridge_policy.BridgeOutputs(out_dim=7)],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotCalvinDataConfig(DataConfigFactory):
+    """DataConfig for CALVIN-style LeRobot datasets (atomic annotations, 1-2 cameras)."""
+
+    # Whether to use only base image (mask out wrist)
+    use_only_base: bool = True
+    # Whether to compute duration from atomic.valid in the policy
+    compute_duration: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack raw dataset keys -> standard keys used by CalvinInputs
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "image": {
+                            "image_0": "observation.images.image_0",
+                            "image_1": "observation.images.image_1",
+                        },
+                        # pass-through camera_present if available
+                        "camera_present": "camera_present",
+                        # state/action/prompt
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        # atomic annotations
+                        "atomic/valid": "atomic.valid",
+                        "atomic/cur_translation_idx": "atomic.cur_translation_idx",
+                        "atomic/cur_rotation_idx": "atomic.cur_rotation_idx",
+                        "atomic/cur_gripper_idx": "atomic.cur_gripper_idx",
+                        "atomic/cur_duration_idx": "atomic.cur_duration_idx",
+                        # optional: segment_start to enable AtomicWindowDataset filtering
+                        "atomic.segment_start": "atomic.segment_start",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[
+                calvin_policy.CalvinInputs(
+                    action_dim=model_config.action_dim,
+                    action_horizon=model_config.action_horizon,
+                    use_only_base=self.use_only_base,
+                    compute_duration=self.compute_duration,
+                    duration_min=3,
+                    duration_max=10,
+                    duration_compact=True,
+                )
+            ],
+            outputs=[calvin_policy.CalvinOutputs(out_dim=7)],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # Include atomic.valid so it is windowed with the same delta_timestamps
             action_sequence_keys=("action", "atomic.valid"),
         )
 
@@ -504,7 +630,7 @@ class TrainConfig:
     batch_size: int = 128
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
-    num_workers: int = 16
+    num_workers: int = 4
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
@@ -714,14 +840,14 @@ _CONFIGS = [
     ),
     # Atomic pretraining on LeRobot (Bridge v2 converted) with placeholder KV and fused conditioning
     TrainConfig(
-        name="pi0_atomic_bridge",
+        name="pi0_atomic",
         model=pi0.Pi0Config(
             action_dim=7,
             action_horizon=10,
             cond_mode="state",
             kv_policy="placeholder",
             loss_weights={"action": 1.0, "atomic": 2.0, "ntp": 0.0},
-            atomic_vocab_sizes=(193, 19, 3, 3),
+            atomic_vocab_sizes=(64, 27, 3, 8),
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m",
         ),
@@ -736,7 +862,10 @@ _CONFIGS = [
         # Initialize from base pi0 checkpoint; override via CLI as needed
         weight_loader=weight_loaders.CheckpointWeightLoader("/home/zhiyu/mzh/pi0_base/params"),
         # Freeze filter for LoRA finetuning, matches model LoRA variants
-        freeze_filter=nnx.All(
+        # 注意：这里需要 OR 语义（Any），以同时冻结两组：
+        # 1) VLM LLM 基座（排除 LoRA 与 Action Expert 分支）
+        # 2) SigLIP 图像编码器分支
+        freeze_filter=nnx.Any(
             pi0.Pi0Config(
                 paligemma_variant="gemma_2b_lora",
                 action_expert_variant="gemma_300m",
@@ -745,7 +874,7 @@ _CONFIGS = [
                 max_token_len=64,
             ).get_freeze_filter(),
             # 额外冻结 SigLIP 图像编码器分支
-            nnx_utils.PathRegex(".*img.*"),
+            nnx_utils.PathRegex("PaliGemma/img/.*"),
         ),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
@@ -759,33 +888,36 @@ _CONFIGS = [
             action_horizon=10,
             cond_mode="state",
             kv_policy="placeholder",
-            loss_weights={"action": 3.0, "atomic": 0.25, "ntp": 0.0},
+            loss_weights={"action": 3.0, "atomic": 0.0, "ntp": 0.0},
             atomic_vocab_sizes=(193, 19, 3, 3),
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m",
         ),
         data=LeRobotAtomicDataConfig(
             repo_id="maozihao/bridge2atomic",
-            root="/home/zhiyu/mzh/datasets/bridge2lerobot",
+            root="/home/zhiyu/mzh/datasets/bridge2lerobot_train",
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/home/zhiyu/mzh/openpi/checkpoints/pi0_atomic_bridge/<exp>/<step>/params"),
-        freeze_filter=nnx.All(
-            # 冻结 LLM（含LoRA权重）
-            nnx_utils.PathRegex("PaliGemma/llm/.*"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/zhiyu/mzh/openpi/checkpoints/pi0_atomic_bridge/atomic_pretrain_stage_1/30000/params"),
+        freeze_filter=nnx.Any(
+            # 冻结 VLM (PaliGemma) 部分：匹配所有 llm，但排除 _1（Action Expert）
+            # 使用 All + Not 的组合，与 get_freeze_filter() 保持一致
+            nnx.All(
+                nnx_utils.PathRegex(".*llm.*"),
+                nnx.Not(nnx_utils.PathRegex(".*llm.*_1.*")),
+            ),
             # 冻结 SigLIP 图像编码器
-            nnx_utils.PathRegex(".*img.*"),
+            nnx_utils.PathRegex("PaliGemma/img/.*"),
+            # 冻结 VLM 的原子分类头（已经收敛）：匹配 atomic_head_t, atomic_head_r, atomic_head_g, atomic_head_d
+            nnx_utils.PathRegex("atomic_head_[trgd]/.*"),
         ),
+
+
+        # trainable_filter 会自动设置为 nnx.Not(freeze_filter)，训练 Action Expert (_1) 和投影层
         ema_decay=None,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=1.5e-4,
-            decay_steps=200_000,
-            decay_lr=1.5e-5,
-        ),
-        num_train_steps=300_000,
+        num_train_steps=300_00,
     ),
     #
     # Fine-tuning Aloha configs.

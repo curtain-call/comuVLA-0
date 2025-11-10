@@ -212,6 +212,98 @@ class ResizeImages(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class RandomShiftsAug(DataTransformFn):
+    """Random shifts augmentation with replicate padding per image key.
+    
+    - pad_default: default pad pixels for unspecified keys
+    - pad_by_key:  overrides for specific keys, e.g.
+        {"base_0_rgb": 10, "left_wrist_0_rgb": 4, "right_wrist_0_rgb": 4}
+    """
+    pad_default: int = 0
+    pad_by_key: dict[str, int] = dataclasses.field(default_factory=dict)
+
+    def __call__(self, data: DataDict) -> DataDict:
+        imgs = data.get("image")
+        if not isinstance(imgs, dict):
+            return data
+
+        def shift(img: np.ndarray, pad: int) -> np.ndarray:
+            if pad is None or pad <= 0:
+                return img
+            x = np.asarray(img)
+            if x.ndim == 2:
+                x = x[..., None]
+            if x.ndim != 3:
+                return img
+            h, w = x.shape[:2]
+            # replicate padding
+            y = np.pad(x, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+            dy = np.random.randint(-pad, pad + 1)
+            dx = np.random.randint(-pad, pad + 1)
+            top = pad + dy
+            left = pad + dx
+            return y[top : top + h, left : left + w, :]
+
+        out_images = {}
+        for k, v in imgs.items():
+            pad = self.pad_by_key.get(k, self.pad_default)
+            out_images[k] = shift(v, pad)
+        return {**data, "image": out_images}
+
+
+@dataclasses.dataclass(frozen=True)
+class ScaleImagesToUnit(DataTransformFn):
+    """Convert uint8 images to float32 in [0,1]."""
+
+    def __call__(self, data: DataDict) -> DataDict:
+        imgs = data.get("image")
+        if not isinstance(imgs, dict):
+            return data
+        out = {}
+        for k, v in imgs.items():
+            x = np.asarray(v)
+            if x.dtype != np.float32:
+                x = x.astype(np.float32, copy=False)
+            # if appears to be uint8 range, scale
+            if x.max() > 1.0 or np.issubdtype(v.dtype, np.uint8):
+                x = x / 255.0
+            out[k] = x
+        return {**data, "image": out}
+
+
+@dataclasses.dataclass(frozen=True)
+class NormalizeImages(DataTransformFn):
+    """Channel-wise normalize images: (x - mean) / std.
+    
+    mean/std are lists of 3 floats (RGB) in [0,1].
+    """
+    mean: tuple[float, float, float]
+    std: tuple[float, float, float]
+
+    def __call__(self, data: DataDict) -> DataDict:
+        imgs = data.get("image")
+        if not isinstance(imgs, dict):
+            return data
+        mean = np.asarray(self.mean, dtype=np.float32).reshape(1, 1, 3)
+        std = np.asarray(self.std, dtype=np.float32).reshape(1, 1, 3)
+        out = {}
+        for k, v in imgs.items():
+            x = np.asarray(v, dtype=np.float32)
+            # expect HWC, if CHW move to HWC
+            if x.ndim == 3 and x.shape[-1] not in (1, 3) and x.shape[-3] in (1, 3):
+                x = np.moveaxis(x, -3, -1)
+            # If single channel, broadcast first channel stats
+            if x.ndim == 3 and x.shape[-1] == 1:
+                m = mean[..., :1]
+                s = std[..., :1]
+            else:
+                m = mean
+                s = std
+            out[k] = (x - m) / (s + 1e-6)
+        return {**data, "image": out}
+
+
+@dataclasses.dataclass(frozen=True)
 class SubsampleActions(DataTransformFn):
     stride: int
 
@@ -386,6 +478,42 @@ class ExtractAtomicFromSequence(DataTransformFn):
             "atomic_valid": atomic_valid,
             "atomic_tokens": atomic_tokens,
         }
+
+
+@dataclasses.dataclass(frozen=True)
+class ComputeAtomicDuration(DataTransformFn):
+    """Compute atomic duration index from 'atomic/valid' sequence and write 'atomic/cur_duration_idx'.
+
+    - Counts number of valid (True) steps within the current window.
+    - Clips the count to [min_len, max_len].
+    - Optionally maps to a compact index by subtracting min_len (for contiguous classes).
+    """
+
+    # Minimum and maximum duration in steps (inclusive clipping)
+    min_len: int = 3
+    max_len: int = 10
+    # If True, store d - min_len (compact classes in [0, max_len-min_len])
+    compact: bool = True
+
+    def __call__(self, data: DataDict) -> DataDict:
+        valid = data.get("atomic/valid")
+        if valid is None:
+            return data
+
+        v = np.asarray(valid)
+        if v.ndim == 2 and v.shape[-1] == 1:
+            v = v[..., 0]
+        try:
+            d = int(np.sum(v.astype(bool)))
+        except Exception:
+            # Fallback: leave unchanged if shape is unexpected
+            return data
+
+        d = int(np.clip(d, self.min_len, self.max_len))
+        if self.compact:
+            d = int(max(0, d - self.min_len))
+        data["atomic/cur_duration_idx"] = np.asarray(d, dtype=np.int32)
+        return data
 
 
 @dataclasses.dataclass(frozen=True)
